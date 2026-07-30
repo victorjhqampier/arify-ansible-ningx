@@ -1,0 +1,63 @@
+---
+# Archivo unico para agregar, retirar o ajustar endpoints del proxy.
+# No es necesario editar playbook.yml ni templates/ para cambios normales.
+
+nginx_conf_dir: /etc/nginx/conf.d
+nginx_main_conf_path: /etc/nginx/nginx.conf
+nginx_reverse_proxy_conf_path: /etc/nginx/conf.d/reverse-proxy.conf
+nginx_reverse_proxy_access_log: /var/log/nginx/reverse-proxy-access.log
+nginx_reverse_proxy_error_log: /var/log/nginx/reverse-proxy-error.log
+nginx_ca_trusted_certificate: /etc/pki/tls/certs/ca-bundle.crt
+proxy_server_name: _
+
+proxy_allowed_status_codes:
+  - 200
+  - 201
+  - 202
+  - 204
+  - 301
+  - 302
+  - 307
+  - 308
+  - 400
+  - 401
+  - 403
+  - 404
+  - 405
+
+# Para agregar un endpoint, copia un bloque completo y cambia sus valores.
+# Reglas:
+# - name: minusculas, numeros y guion bajo; debe empezar con letra.
+# - host: dominio destino sin https:// ni ruta.
+# - scheme: protocolo del destino; http o https.
+# - port: puerto real del destino.
+# - path_prefix: ruta local; siempre empieza y termina con "/".
+# - path_name: ruta local sin "/" usada para redirigir /nombre hacia /nombre/.
+# - keepalive: conexiones persistentes hacia el upstream.
+# - ssl_verify y ssl_verify_depth se usan cuando scheme es https.
+proxies:
+  - name: ceptinel
+    host: prod-monitoreo-clap.ceptinel.com
+    scheme: https
+    port: 443
+    path_name: ceptinel
+    path_prefix: /ceptinel/
+    keepalive: 32
+    ssl_verify: true
+    ssl_verify_depth: 3
+    connect_timeout: 5s
+    send_timeout: 6s
+    read_timeout: 7s
+
+  - name: keynua
+    host: api.stg.keynua.com
+    scheme: https
+    port: 443
+    path_name: keynua
+    path_prefix: /keynua/
+    keepalive: 32
+    ssl_verify: true
+    ssl_verify_depth: 3
+    connect_timeout: 5s
+    send_timeout: 6s
+    read_timeout: 7s

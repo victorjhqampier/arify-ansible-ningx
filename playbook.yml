@@ -1,0 +1,186 @@
+---
+- name: Configurar Nginx como proxy reverso multi-endpoint
+  hosts: nginx
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Validar que exista al menos un endpoint
+      become: false
+      ansible.builtin.assert:
+        that:
+          - proxies is defined
+          - proxies | length > 0
+        fail_msg: "Define al menos un endpoint en group_vars/nginx.yml."
+        success_msg: "La lista de endpoints esta definida."
+      tags:
+        - validate
+
+    - name: Validar campos obligatorios de cada endpoint
+      become: false
+      ansible.builtin.assert:
+        that:
+          - item.name is defined
+          - item.name is match('^[a-z][a-z0-9_]*$')
+          - item.host is defined
+          - item.host is match('^[A-Za-z0-9.-]+$')
+          - item.scheme is defined
+          - item.scheme in ['http', 'https']
+          - item.port is defined
+          - (item.port | int) > 0
+          - (item.port | int) <= 65535
+          - item.path_name is defined
+          - item.path_name is match('^[A-Za-z0-9._~-]+$')
+          - item.path_prefix is defined
+          - item.path_prefix is match('^/[A-Za-z0-9._~/-]+/$')
+          - item.keepalive is defined
+          - (item.keepalive | int) > 0
+          - item.connect_timeout is defined
+          - item.connect_timeout is match('^[0-9]+[smh]$')
+          - item.send_timeout is defined
+          - item.send_timeout is match('^[0-9]+[smh]$')
+          - item.read_timeout is defined
+          - item.read_timeout is match('^[0-9]+[smh]$')
+        fail_msg: >-
+          Endpoint invalido. Revisa name, host, scheme, port, path_name,
+          path_prefix, keepalive y timeouts en group_vars/nginx.yml.
+        success_msg: "Endpoint {{ item.name }} valido."
+      loop: "{{ proxies }}"
+      loop_control:
+        label: "{{ item.name | default('sin_name') }}"
+      tags:
+        - validate
+
+    - name: Validar que no existan endpoints duplicados
+      become: false
+      ansible.builtin.assert:
+        that:
+          - proxies | map(attribute='name') | list | unique | length == proxies | length
+          - proxies | map(attribute='path_prefix') | list | unique | length == proxies | length
+        fail_msg: "Hay names o path_prefix duplicados en group_vars/nginx.yml."
+        success_msg: "No hay endpoints duplicados."
+      tags:
+        - validate
+
+    - name: Validar configuracion SSL de endpoints HTTPS
+      become: false
+      ansible.builtin.assert:
+        that:
+          - item.ssl_verify is defined
+          - item.ssl_verify | type_debug == 'bool'
+          - item.ssl_verify_depth is defined
+          - (item.ssl_verify_depth | int) > 0
+        fail_msg: >-
+          Endpoint HTTPS invalido. Define ssl_verify y ssl_verify_depth
+          en group_vars/nginx.yml.
+        success_msg: "SSL de endpoint {{ item.name }} valido."
+      loop: "{{ proxies | selectattr('scheme', 'equalto', 'https') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      tags:
+        - validate
+
+  tasks:
+    - name: Instalar Nginx y certificados CA
+      ansible.builtin.dnf:
+        name:
+          - nginx
+          - ca-certificates
+        state: present
+        update_cache: true
+
+    - name: Crear directorio de configuracion de Nginx
+      ansible.builtin.file:
+        path: "{{ nginx_conf_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Instalar configuracion principal administrada de Nginx
+      ansible.builtin.template:
+        src: templates/nginx.conf.j2
+        dest: "{{ nginx_main_conf_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+      notify: Recargar Nginx
+
+    - name: Instalar configuracion de proxy reverso
+      ansible.builtin.template:
+        src: templates/reverse-proxy.conf.j2
+        dest: "{{ nginx_reverse_proxy_conf_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+      notify: Recargar Nginx
+
+    - name: Validar configuracion de Nginx
+      ansible.builtin.command: nginx -t
+      register: nginx_validation
+      changed_when: false
+
+    - name: Obtener configuracion efectiva de Nginx
+      ansible.builtin.command: nginx -T
+      register: nginx_dump
+      changed_when: false
+
+    - name: Verificar que los upstreams esten declarados
+      ansible.builtin.assert:
+        that:
+          - "'upstream {{ item.name }}_backend' in nginx_dump.stdout"
+        fail_msg: "Falta el upstream {{ item.name }}_backend en la configuracion de Nginx."
+        success_msg: "El upstream {{ item.name }}_backend esta presente en la configuracion activa."
+      loop: "{{ proxies }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Verificar que los endpoints esten declarados
+      ansible.builtin.assert:
+        that:
+          - "'location = /{{ item.path_name }}' in nginx_dump.stdout"
+          - "'location {{ item.path_prefix }}' in nginx_dump.stdout"
+        fail_msg: "Falta el endpoint {{ item.path_prefix }} en la configuracion de Nginx."
+        success_msg: "El endpoint {{ item.path_prefix }} esta presente en la configuracion activa."
+      loop: "{{ proxies }}"
+      loop_control:
+        label: "{{ item.path_prefix }}"
+
+    - name: Mostrar resultado de validacion
+      ansible.builtin.debug:
+        var: nginx_validation.stderr_lines
+
+    - name: Habilitar e iniciar Nginx
+      ansible.builtin.systemd:
+        name: nginx
+        enabled: true
+        state: started
+
+    - name: Aplicar cambios pendientes
+      ansible.builtin.meta: flush_handlers
+
+    - name: Probar endpoints locales del proxy
+      ansible.builtin.uri:
+        url: "http://127.0.0.1{{ item.path_prefix }}"
+        method: GET
+        return_content: false
+        follow_redirects: none
+        status_code: "{{ proxy_allowed_status_codes }}"
+      loop: "{{ proxies }}"
+      loop_control:
+        label: "{{ item.path_prefix }}"
+      register: proxy_tests
+      changed_when: false
+
+    - name: Mostrar respuesta de cada endpoint
+      ansible.builtin.debug:
+        msg: "El endpoint {{ item.item.path_prefix }} respondio con HTTP {{ item.status }}"
+      loop: "{{ proxy_tests.results }}"
+
+  handlers:
+    - name: Recargar Nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded

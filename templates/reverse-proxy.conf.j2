@@ -1,0 +1,52 @@
+{% for proxy in proxies %}
+{% set upstream_name = proxy.name ~ '_backend' %}
+upstream {{ proxy.name }}_backend {
+    zone {{ upstream_name }} 64k;
+    server {{ proxy.host }}:{{ proxy.port }};
+    keepalive {{ proxy.keepalive }};
+}
+
+{% endfor %}
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name {{ proxy_server_name }};
+
+    access_log {{ nginx_reverse_proxy_access_log }} main;
+    error_log {{ nginx_reverse_proxy_error_log }} warn;
+
+{% for proxy in proxies %}
+{% set upstream_name = proxy.name ~ '_backend' %}
+    location = /{{ proxy.path_name }} {
+        return 301 {{ proxy.path_prefix }};
+    }
+
+    location {{ proxy.path_prefix }} {
+        proxy_pass {{ proxy.scheme }}://{{ upstream_name }}/;
+
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+
+        proxy_set_header Host {{ proxy.host }};
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+{% if proxy.scheme == 'https' %}
+        proxy_ssl_server_name on;
+        proxy_ssl_name {{ proxy.host }};
+        proxy_ssl_verify {{ 'on' if proxy.ssl_verify else 'off' }};
+        proxy_ssl_trusted_certificate {{ nginx_ca_trusted_certificate }};
+        proxy_ssl_verify_depth {{ proxy.ssl_verify_depth }};
+{% endif %}
+
+        proxy_connect_timeout {{ proxy.connect_timeout }};
+        proxy_send_timeout {{ proxy.send_timeout }};
+        proxy_read_timeout {{ proxy.read_timeout }};
+    }
+
+{% endfor %}
+    location / {
+        return 404;
+    }
+}
