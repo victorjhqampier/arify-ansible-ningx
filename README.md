@@ -136,7 +136,10 @@ El playbook tambien valida en ejecucion:
 ## Pruebas despues de ejecutar
 
 ```bash
+curl -i https://prod-monitoreo-clap.ceptinel.com
 curl -i http://localhost/ceptinel/
+
+curl -i https://api.stg.keynua.com
 curl -i http://localhost/keynua/
 ```
 
